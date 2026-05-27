@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>合成清华大学 (Tsinghua Edition)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #f5f0f6;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100%;
+            max-width: 450px;
+            height: 100vh;
+            max-height: 800px;
+            background: #fffbfe;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            overflow: hidden;
+        }
+
+        #header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            background-color: #660066; /* 清华紫 */
+            color: white;
+            font-size: 18px;
+            font-weight: bold;
+            box-sizing: border-box;
+        }
+
+        #score-board {
+            background: rgba(255,255,255,0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+        }
+
+        canvas {
+            display: block;
+            background: #ffffff;
+            cursor: pointer;
+        }
+
+        #game-over-mask {
+            display: none;
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+            color: white;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        #restart-btn {
+            margin-top: 20px;
+            padding: 12px 30px;
+            background-color: #660066;
+            color: white;
+            border: 2px solid white;
+            border-radius: 25px;
+            font-size: 18px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        #restart-btn:hover {
+            background-color: white;
+            color: #660066;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+</head>
+<body>
+
+<div id="game-container">
+    <div id="header">
+        <div>合成清华 🎓</div>
+        <div id="score-board">得分: <span id="score">0</span></div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="game-over-mask">
+        <h2>游戏结束 (位置不够啦!)</h2>
+        <p>最终得分: <span id="final-score">0</span></p>
+        <button id="restart-btn" onclick="initGame()">再来一局</button>
+    </div>
+</div>
+
+<script>
+// --- 清华元素设计（由小到大） ---
+const ELEMENT_TYPES = [
+    { level: 0, radius: 15, color: '#e6ccff', name: '清华猫' },
+    { level: 1, radius: 23, color: '#cc99ff', name: '清华校徽' },
+    { level: 2, radius: 32, color: '#b366ff', name: '情人坡' },
+    { level: 3, radius: 42, color: '#9933ff', name: '水木清华' },
+    { level: 4, radius: 53, color: '#8000ff', name: '西阶教室' },
+    { level: 5, radius: 65, color: '#cc00cc', name: '紫荆操场' },
+    { level: 6, radius: 78, color: '#aa00aa', name: '科学馆' },
+    { level: 7, radius: 92, color: '#880088', name: '清华大礼堂' },
+    { level: 8, radius: 108, color: '#660066', name: '二校门' },
+    { level: 9, radius: 125, color: '#440044', name: '厚德载物' },
+    { level: 10, radius: 145, color: '#ffd700', name: '自强不息 (通关!)' } // 金色代表终极
+];
+
+// --- 引擎变量 ---
+const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
+let engine, runner, canvas, ctx;
+let width, height;
+let score = 0;
+let currentFruit = null;
+let isReadyToDrop = true;
+let gameOver = false;
+const gameOverLine = 130; 
+
+// --- 初始化游戏 ---
+function initGame() {
+    score = 0;
+    gameOver = false;
+    isReadyToDrop = true;
+    currentFruit = null;
+    document.getElementById('score').innerText = score;
+    document.getElementById('game-over-mask').style.display = 'none';
+
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    const container = document.getElementById('game-container');
+    width = container.clientWidth;
+    height = container.clientHeight - document.getElementById('header').offsetHeight;
+    canvas.width = width;
+    canvas.height = height;
+
+    if (engine) Engine.clear(engine);
+    engine = Engine.create({ gravity: { y: 1.2 } });
+
+    const wallOptions = { isStatic: true, render: { visible: false }, friction: 0.1 };
+    const ground = Bodies.rectangle(width / 2, height + 30, width, 60, wallOptions);
+    const leftWall = Bodies.rectangle(-30, height / 2, 60, height, wallOptions);
+    const rightWall = Bodies.rectangle(width + 30, height / 2, 60, height, wallOptions);
+    Composite.add(engine.world, [ground, leftWall, rightWall]);
+
+    if (runner) Runner.stop(runner);
+    runner = Runner.create();
+    Runner.run(runner, engine);
+
+    Events.off(engine, 'collisionStart');
+    Events.on(engine, 'collisionStart', handleCollision);
+
+    Events.off(engine, 'afterUpdate');
+    Events.on(engine, 'afterUpdate', updateGame);
+
+    spawnNextFruit();
+}
+
+// --- 生成下一个元素 ---
+function spawnNextFruit() {
+    if (gameOver) return;
+    const level = Math.floor(Math.random() * 4); // 只随机生成0~3级小元素
+    const config = ELEMENT_TYPES[level];
+    
+    currentFruit = {
+        level: level,
+        x: width / 2,
+        y: 80,
+        radius: config.radius,
+        color: config.color,
+        name: config.name
+    };
+    isReadyToDrop = true;
+}
+
+// --- 投放动作 ---
+function dropFruit(targetX) {
+    if (!isReadyToDrop || gameOver || !currentFruit) return;
+    isReadyToDrop = false;
+
+    const r = currentFruit.radius;
+    const x = Math.max(r, Math.min(width - r, targetX));
+
+    const ball = Bodies.circle(x, currentFruit.y, r, {
+        restitution: 0.2, 
+        friction: 0.1,   
+        label: 'fruit_' + currentFruit.level
+    });
+
+    ball.gameData = { level: currentFruit.level, radius: r, name: currentFruit.name };
+
+    Composite.add(engine.world, ball);
+    currentFruit = null;
+
+    setTimeout(() => {
+        spawnNextFruit();
+    }, 500);
+}
+
+// --- 处理碰撞合成 ---
+function handleCollision(event) {
+    const pairs = event.pairs;
+    for (let i = 0; i < pairs.length; i++) {
+        const pair = pairs[i];
+        const bodyA = pair.bodyA;
+        const bodyB = pair.bodyB;
+
+        if (bodyA.gameData && bodyB.gameData && bodyA.gameData.level === bodyB.gameData.level) {
+            const currentLevel = bodyA.gameData.level;
+            
+            if (currentLevel >= ELEMENT_TYPES.length - 1) continue;
+
+            const newX = (bodyA.position.x + bodyB.position.x) / 2;
+            const newY = (bodyA.position.y + bodyB.position.y) / 2;
+            const nextLevel = currentLevel + 1;
+            const nextConfig = ELEMENT_TYPES[nextLevel];
+
+            Composite.remove(engine.world, [bodyA, bodyB]);
+
+            score += (currentLevel + 1) * 2;
+            document.getElementById('score').innerText = score;
+
+            setTimeout(() => {
+                const newBall = Bodies.circle(newX, newY, nextConfig.radius, {
+                    restitution: 0.2,
+                    friction: 0.1,
+                    label: 'fruit_' + nextLevel
+                });
+                newBall.gameData = { level: nextLevel, radius: nextConfig.radius, name: nextConfig.name };
+                Composite.add(engine.world, newBall);
+            }, 0);
+            
+            break; 
+        }
+    }
+}
+
+// --- 核心更新循环 ---
+function updateGame() {
+    ctx.clearRect(0, 0, width, height);
+
+    // 绘制紫红警戒线
+    ctx.strokeStyle = '#660066';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(0, gameOverLine);
+    ctx.lineTo(width, gameOverLine);
+    ctx.stroke();
+    ctx.setLineDash([]); 
+
+    const bodies = Composite.allBodies(engine.world);
+    let isOverflow = false;
+
+    bodies.forEach(body => {
+        if (body.isStatic) return;
+
+        const { x, y } = body.position;
+        const { radius, color, name, level } = body.gameData;
+
+        // 绘制球体
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // 绘制文字
+        ctx.fillStyle = level > 3 ? '#ffffff' : '#333333';
+        ctx.font = `bold ${Math.max(11, radius * 0.35)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        let displayName = name;
+        if(radius < 35 && displayName.length > 3) displayName = displayName.substring(0,2) + '..';
+        ctx.fillText(displayName, x, y);
+
+        // 触线判定
+        if (y - radius < gameOverLine && body.velocity.y < 0.1 && !isReadyToDrop) {
+            if (y > 150) isOverflow = true;
+        }
+    });
+
+    // 绘制预览球
+    if (currentFruit && isReadyToDrop) {
+        ctx.fillStyle = currentFruit.color;
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath();
+        ctx.arc(currentFruit.x, currentFruit.y, currentFruit.radius, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.fillStyle = '#333333';
+        ctx.font = `bold ${Math.max(11, currentFruit.radius * 0.35)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(currentFruit.name, currentFruit.x, currentFruit.y);
+        ctx.globalAlpha = 1.0;
+    }
+
+    if (isOverflow && !gameOver) {
+        gameOver = true;
+        document.getElementById('final-score').innerText = score;
+        document.getElementById('game-over-mask').style.display = 'flex';
+    }
+}
+
+// --- 操作监听 ---
+function handleMove(e) {
+    if (!currentFruit || !isReadyToDrop) return;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const rect = canvas.getBoundingClientRect();
+    currentFruit.x = clientX - rect.left;
+}
+
+function handleEnd(e) {
+    if (!currentFruit || !isReadyToDrop) return;
+    const clientX = e.changedTouches ? e.changedTouches[0].clientX : e.clientX;
+    const rect = canvas.getBoundingClientRect();
+    dropFruit(clientX - rect.left);
+}
+
+window.addEventListener('mousemove', handleMove);
+window.addEventListener('mouseup', handleEnd);
+window.addEventListener('touchmove', handleMove, { passive: true });
+window.addEventListener('touchend', handleEnd);
+
+window.onload = initGame;
+</script>
+
+</body>
+</html>
